@@ -1,7 +1,7 @@
-# ProfoundVifReader
+# ProfoundVifReader WIP
 
 A command-line tool for converting Profound VIBRA VIF files to CSV format.
-
+Its not ready
 ## Description
 
 ProfoundVifReader processes binary VIF files from Profound VIBRA vibration monitoring systems and converts them into readable CSV (Comma-Separated Values) format. The tool extracts vibration measurements, sensor data, and metadata from the proprietary VIF format.
@@ -69,3 +69,4 @@ dotnet build
 ## Author
 
 [Add your name/organization here]
+
