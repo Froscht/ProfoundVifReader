@@ -546,41 +546,51 @@ internal class VifReader
 
         // Output CSV row - matching exact column order from header
         var outWriter = output!;
-        outWriter.Write($"\"{date}\",");
-        outWriter.Write($"\"{time}\",");
+        var sb = new StringBuilder(512);
+        void AppendField(string value)
+        {
+            sb.Append('\"').Append(value).Append('\"').Append(',');
+        }
+        void AppendLast(string value)
+        {
+            sb.Append('\"').Append(value).Append('\"');
+        }
+
+        AppendField(date);
+        AppendField(time);
         if (printNumber)
         {
-            outWriter.Write($"\"{counter}\",");
+            AppendField(counter);
         }
-        outWriter.Write($"\"{overallState}\",");
-        outWriter.Write($"\"{overallV}\",");
+        AppendField(overallState);
+        AppendField(overallV);
         // X axis
-        outWriter.Write($"\"{xData.state}\",");
-        outWriter.Write($"\"{xData.v}\",");
-        outWriter.Write($"\"{xData.kb}\",");
-        outWriter.Write($"\"{xData.ft}\",");
-        outWriter.Write($"\"{xData.u}\",");
-        outWriter.Write($"\"{xData.a}\",");
-        outWriter.Write($"\"{xData.cv}\",");
-        outWriter.Write($"\"{xData.cf}\",");
+        AppendField(xData.state);
+        AppendField(xData.v);
+        AppendField(xData.kb);
+        AppendField(xData.ft);
+        AppendField(xData.u);
+        AppendField(xData.a);
+        AppendField(xData.cv);
+        AppendField(xData.cf);
         // Y axis
-        outWriter.Write($"\"{yData.state}\",");
-        outWriter.Write($"\"{yData.v}\",");
-        outWriter.Write($"\"{yData.kb}\",");
-        outWriter.Write($"\"{yData.ft}\",");
-        outWriter.Write($"\"{yData.u}\",");
-        outWriter.Write($"\"{yData.a}\",");
-        outWriter.Write($"\"{yData.cv}\",");
-        outWriter.Write($"\"{yData.cf}\",");
+        AppendField(yData.state);
+        AppendField(yData.v);
+        AppendField(yData.kb);
+        AppendField(yData.ft);
+        AppendField(yData.u);
+        AppendField(yData.a);
+        AppendField(yData.cv);
+        AppendField(yData.cf);
         // Z axis
-        outWriter.Write($"\"{zData.state}\",");
-        outWriter.Write($"\"{zData.v}\",");
-        outWriter.Write($"\"{zData.kb}\",");
-        outWriter.Write($"\"{zData.ft}\",");
-        outWriter.Write($"\"{zData.u}\",");
-        outWriter.Write($"\"{zData.a}\",");
-        outWriter.Write($"\"{zData.cv}\",");
-        outWriter.Write($"\"{zData.cf}\",");
+        AppendField(zData.state);
+        AppendField(zData.v);
+        AppendField(zData.kb);
+        AppendField(zData.ft);
+        AppendField(zData.u);
+        AppendField(zData.a);
+        AppendField(zData.cv);
+        AppendField(zData.cf);
         // Sensor data
         string tempStr;
         string voltStr;
@@ -594,19 +604,20 @@ internal class VifReader
             tempStr = FormatFixedOdd(temperature, 1);
             voltStr = FormatFixedOdd(voltage, 2);
         }
-        outWriter.Write($"\"{tempStr}\",");
-        outWriter.Write($"\"{voltStr}\",");
-        outWriter.Write($"\"{memoryUse}\",");
-        outWriter.Write($"\"{usbPowered}\",");
-        outWriter.Write($"\"{signalStrength}\",");
-        outWriter.Write($"\"{signalQuality}\",");
-        outWriter.Write($"\"{transmitted}\",");
-        outWriter.Write($"\"{allTransmitted}\",");
-        outWriter.Write($"\"{peakTypeCat}\",");
-        outWriter.Write($"\"{code}\",");
-        outWriter.Write($"\"{errorCode}\",");
-        outWriter.Write($"\"{geophone}\",");
-        outWriter.WriteLine($"\"{clockChanged}\"");
+        AppendField(tempStr);
+        AppendField(voltStr);
+        AppendField(memoryUse.ToString());
+        AppendField(usbPowered.ToString());
+        AppendField(signalStrength);
+        AppendField(signalQuality);
+        AppendField(transmitted.ToString());
+        AppendField(allTransmitted.ToString());
+        AppendField(peakTypeCat);
+        AppendField(code);
+        AppendField(errorCode.ToString());
+        AppendField(geophone);
+        AppendLast(clockChanged.ToString());
+        outWriter.WriteLine(sb.ToString());
     }
 
     private (string v, string kb, string ft, string u, string a, string cv, string cf, string state) ParseDirectionData(
