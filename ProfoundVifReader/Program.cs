@@ -207,12 +207,16 @@ internal class VifReader
 
     public void ProcessVifFile(string filename, string? outputFile)
     {
-        output = outputFile != null ? new StreamWriter(outputFile, false, Encoding.UTF8) : Console.Out;
+        const int IoBufferSize = 256 * 1024;
+        output = outputFile != null
+            ? new StreamWriter(outputFile, false, Encoding.UTF8, IoBufferSize)
+            : new StreamWriter(Console.OpenStandardOutput(), Encoding.GetEncoding(1252), IoBufferSize, leaveOpen: true);
 
         try
         {
-            using (var fs = new FileStream(filename, FileMode.Open, FileAccess.Read))
-            using (var reader = new BinaryReader(fs))
+            using (var fs = new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var bs = new BufferedStream(fs, IoBufferSize))
+            using (var reader = new BinaryReader(bs))
             {
                 // First pass: detect KB mode
                 isKbMode = DetectKbMode(reader);
@@ -233,6 +237,7 @@ internal class VifReader
         }
         finally
         {
+            output?.Flush();
             if (outputFile != null) output?.Close();
         }
     }
@@ -349,79 +354,100 @@ internal class VifReader
 
     private void ProcessRecords(BinaryReader reader)
     {
-        // Search for VIB headers byte-by-byte (original approach)
-        var buffer = new byte[70]; // Max size for one record
-        var recordCount = 0;
-        var state = 0; // 0=looking for 'V', 1=found 'V', 2=found 'VI', 3=found 'VIB'
+        const int RecordBufferSize = 70;
+        const int MinRecordBytes = 12;
+        const int ScanChunkSize = 256 * 1024;
+
+        Stream stream = reader.BaseStream;
+        byte[] window = new byte[ScanChunkSize * 2];
+        int windowLength = 0;
+        int scanIndex = 0;
+        long windowStartPos = 0;
+        int recordCount = 0;
         byte[]? lastRecord = null;
         long lastRecordPos = -1;
-        long currentStartPos = -1;
 
-        while (reader.BaseStream.Position < reader.BaseStream.Length)
+        bool EnsureBytes(int requiredIndex)
         {
-            var pos = reader.BaseStream.Position;
-            var b = reader.ReadByte();
+            while (requiredIndex > windowLength)
+            {
+                if (scanIndex > 0)
+                {
+                    int remaining = windowLength - scanIndex;
+                    if (remaining > 0)
+                        Array.Copy(window, scanIndex, window, 0, remaining);
+                    windowStartPos += scanIndex;
+                    windowLength = remaining;
+                    scanIndex = 0;
+                }
 
-            if (state == 0 && b == 'V')
-            {
-                buffer[0] = b;
-                state = 1;
-                currentStartPos = pos;
-            }
-            else if (state == 1 && b == 'I')
-            {
-                buffer[1] = b;
-                state = 2;
-            }
-            else if (state == 2 && b == 'B')
-            {
-                buffer[2] = b;
-                state = 3;
+                if (windowLength == window.Length)
+                {
+                    int newSize = window.Length * 2;
+                    while (newSize < requiredIndex)
+                        newSize *= 2;
+                    var bigger = new byte[newSize];
+                    Array.Copy(window, 0, bigger, 0, windowLength);
+                    window = bigger;
+                }
 
-                // Read type (1 byte) + size (2 bytes) + datetime (6 bytes) = 9 bytes
-                var bytesRead = reader.Read(buffer, 3, 9);
-                if (bytesRead != 9)
+                int bytesRead = stream.Read(window, windowLength, window.Length - windowLength);
+                if (bytesRead <= 0)
+                    return false;
+                windowLength += bytesRead;
+            }
+            return true;
+        }
+
+        while (true)
+        {
+            if (!EnsureBytes(scanIndex + 3))
+                break;
+
+            int i = scanIndex;
+            while (i + 2 < windowLength)
+            {
+                if (window[i] == (byte)'V' && window[i + 1] == (byte)'I' && window[i + 2] == (byte)'B')
                     break;
-
-                // Get record size from bytes 4-5 (little-endian)
-                var recordSize = BitConverter.ToUInt16(buffer, 4);
-
-                // Read remaining data (recordSize - 12) bytes
-                var remainingBytes = recordSize - 12;
-                if (remainingBytes > 0)
-                {
-                    var maxRead = Math.Min(remainingBytes, buffer.Length - 12);
-                    bytesRead = reader.Read(buffer, 12, maxRead);
-                    if (bytesRead != maxRead)
-                        break;
-                    if (remainingBytes > maxRead)
-                        reader.BaseStream.Seek(remainingBytes - maxRead, SeekOrigin.Current);
-                }
-
-                recordCount++;
-                if (lastRecord != null && lastRecordPos >= 0)
-                {
-                    int readType = GetReadTypeFromDelta(currentStartPos - lastRecordPos);
-                    ProcessRecord(lastRecord, readType);
-                }
-                if (lastRecord == null)
-                {
-                    lastRecord = new byte[buffer.Length];
-                }
-                Array.Copy(buffer, lastRecord, buffer.Length);
-                lastRecordPos = currentStartPos;
-                state = 0; // Reset to search for next VIB
+                i++;
             }
-            else
+
+            if (i + 2 >= windowLength)
             {
-                state = 0; // Reset if pattern broken
+                scanIndex = i;
+                continue;
             }
+
+            if (!EnsureBytes(i + MinRecordBytes))
+                break;
+
+            ushort recordSize = (ushort)(window[i + 4] | (window[i + 5] << 8));
+            int advance = recordSize < MinRecordBytes ? MinRecordBytes : recordSize;
+            if (!EnsureBytes(i + advance))
+                break;
+
+            long recordStartPos = windowStartPos + i;
+            recordCount++;
+
+            if (lastRecord != null && lastRecordPos >= 0)
+            {
+                int readType = GetReadTypeFromDelta(recordStartPos - lastRecordPos);
+                ProcessRecord(lastRecord, readType);
+            }
+
+            if (lastRecord == null)
+                lastRecord = new byte[RecordBufferSize];
+            int copyLen = Math.Min(advance, lastRecord.Length);
+            Array.Copy(window, i, lastRecord, 0, copyLen);
+            if (copyLen < lastRecord.Length)
+                Array.Clear(lastRecord, copyLen, lastRecord.Length - copyLen);
+            lastRecordPos = recordStartPos;
+
+            scanIndex = i + advance;
         }
 
         if (lastRecord != null)
-        {
             ProcessRecord(lastRecord, 2);
-        }
 
         Console.Error.WriteLine($"Total records: {recordCount}");
     }
