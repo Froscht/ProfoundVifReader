@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -7,23 +8,112 @@ namespace ProfoundVifReader;
 
 internal class Program
 {
+    // Command-line options
+    private static bool OptionHeader = false;
+    private static bool OptionNumber = true;
+    private static bool OptionToday = false;
+    private static bool OptionLong = false;
+    private static string? OptionDateFilter = null; // "YYYY-MM-DD"
+
     private static void Main(string[] args)
     {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        Console.OutputEncoding = Encoding.GetEncoding(1252);
         if (args.Length == 0)
         {
-            Console.WriteLine("Usage: ProfoundVifReader <vif-file> [output.csv]");
-            Console.WriteLine("The vif2csv processes Profound VIBRA vif-files.");
-            Console.WriteLine("The output is a CSV (Comma-Separated Values)");
+            PrintUsage();
             return;
         }
 
-        var inputFile = args[0];
-        var outputFile = args.Length > 1 ? args[1] : null;
+        List<string> inputFiles = new List<string>();
+
+        // Parse command-line arguments
+        for (int i = 0; i < args.Length; i++)
+        {
+            string arg = args[i];
+
+            if (arg == "-V" || arg == "--version")
+            {
+                Console.WriteLine("(c) Copyright 2019-2025");
+                Console.WriteLine("Profound VIF2CSV 1.10");
+                Environment.Exit(0);
+            }
+            else if (arg == "-h" || arg == "--header")
+            {
+                OptionHeader = true;
+                Log("set header on.");
+            }
+            else if (arg == "-D" || arg == "--today")
+            {
+                OptionToday = true;
+                Log("filter: today only.");
+            }
+            else if (arg == "-L" || arg == "--long")
+            {
+                OptionLong = true;
+                Log("long format enabled.");
+            }
+            else if (arg == "-N")
+            {
+                OptionNumber = false;
+            }
+            else if (arg == "-n")
+            {
+                OptionNumber = true;
+            }
+            else if (arg == "-d" || arg == "--day")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("Option -d requires an argument");
+                    PrintUsage();
+                    return;
+                }
+                string dateStr = args[++i];
+                Log($"set date filter to: \"{dateStr}\"");
+
+                if (!ValidateDateString(dateStr))
+                {
+                    Console.Error.WriteLine("ERROR: invalid date format. Use YYYY-MM-DD or YY-MM-DD");
+                    PrintUsage();
+                    return;
+                }
+                OptionDateFilter = NormalizeDateString(dateStr);
+            }
+            else if (arg.StartsWith("-"))
+            {
+                Console.WriteLine($"Unknown Option '{arg}'");
+                PrintUsage();
+                return;
+            }
+            else
+            {
+                inputFiles.Add(arg);
+            }
+        }
+
+        if (inputFiles.Count == 0)
+        {
+            PrintUsage();
+            return;
+        }
 
         try
         {
-            var reader = new VifReader();
-            reader.ProcessVifFile(inputFile, outputFile);
+            // Process all input files
+            bool firstFile = true;
+            foreach (string file in inputFiles)
+            {
+                if (!File.Exists(file))
+                {
+                    Console.Error.WriteLine($"ERROR: can't open file: \"{file}\"");
+                    continue;
+                }
+
+                var reader = new VifReader(OptionHeader && firstFile, OptionNumber, OptionToday, OptionLong, OptionDateFilter);
+                reader.ProcessVifFile(file, null);
+                firstFile = false;
+            }
         }
         catch (Exception ex)
         {
@@ -31,19 +121,91 @@ internal class Program
             Environment.Exit(1);
         }
     }
+
+    private static void Log(string msg)
+    {
+        Console.Error.WriteLine(msg);
+    }
+
+    private static void PrintUsage()
+    {
+        Console.WriteLine();
+        Console.WriteLine("Profound Tool Suite");
+        Console.WriteLine("use: VIF2CSV [OPTIONS] ... [FILES] ...");
+        Console.WriteLine("OPTIONS:");
+        Console.WriteLine(" -h  --header           = set header data first");
+        Console.WriteLine(" -V  --version          = displays the version of this software");
+        Console.WriteLine(" -n                     = add counter column (default: on)");
+        Console.WriteLine(" -N                     = remove counter column");
+        Console.WriteLine(" -d  --day \"YYYY-MM-DD\" = output only from a specified day");
+        Console.WriteLine(" -D  --today            = output only from today");
+        Console.WriteLine(" -L  --long             = export to csv with extended precision");
+        Console.WriteLine("FILES are one or more vif-files.");
+    }
+
+    private static bool ValidateDateString(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+
+        if (s.Length == 8) // YY-MM-DD
+        {
+            if (s[2] != '-' || s[5] != '-') return false;
+            return IsDigits(s, 0, 2) && IsDigits(s, 3, 2) && IsDigits(s, 6, 2);
+        }
+        if (s.Length == 10) // YYYY-MM-DD
+        {
+            if (s[4] != '-' || s[7] != '-') return false;
+            return IsDigits(s, 0, 4) && IsDigits(s, 5, 2) && IsDigits(s, 8, 2);
+        }
+        return false;
+    }
+
+    private static bool IsDigits(string s, int start, int count)
+    {
+        for (int i = start; i < start + count; i++)
+            if (!char.IsDigit(s[i])) return false;
+        return true;
+    }
+
+    private static string NormalizeDateString(string s)
+    {
+        // Convert YY-MM-DD to YYYY-MM-DD
+        if (s.Length == 8)
+        {
+            int year = int.Parse(s.Substring(0, 2));
+            return $"{2000 + year:D4}-{s.Substring(3)}";
+        }
+        return s;
+    }
 }
 
 internal class VifReader
 {
-    private TextWriter output;
+    private TextWriter? output;
     private const float FLOAT16_DIVISOR = 1000000.0f;
     private const float INT16_DIVISOR = 2.0f;
     private static readonly CultureInfo InvariantCulture = CultureInfo.InvariantCulture;
-    private static bool debugPrinted = false;
     private int recordsProcessed = 0;
     private int recordsSkipped = 0;
+    private int recordCounter = 0;
 
-    public void ProcessVifFile(string filename, string outputFile)
+    private readonly bool printHeader;
+    private readonly bool printNumber;
+    private readonly bool filterToday;
+    private readonly bool longFormat;
+    private readonly string? dateFilter;
+    private bool isKbMode = false;
+
+    public VifReader(bool printHeader, bool printNumber, bool filterToday, bool longFormat, string? dateFilter)
+    {
+        this.printHeader = printHeader;
+        this.printNumber = printNumber;
+        this.filterToday = filterToday;
+        this.longFormat = longFormat;
+        this.dateFilter = dateFilter;
+    }
+
+    public void ProcessVifFile(string filename, string? outputFile)
     {
         output = outputFile != null ? new StreamWriter(outputFile, false, Encoding.UTF8) : Console.Out;
 
@@ -52,6 +214,18 @@ internal class VifReader
             using (var fs = new FileStream(filename, FileMode.Open, FileAccess.Read))
             using (var reader = new BinaryReader(fs))
             {
+                // First pass: detect KB mode
+                isKbMode = DetectKbMode(reader);
+                
+                // Print headers if requested
+                if (printHeader)
+                {
+                    PrintHeaderNames();
+                    PrintHeaderUnits();
+                }
+
+                // Second pass: process records
+                reader.BaseStream.Seek(0, SeekOrigin.Begin);
                 ProcessRecords(reader);
             }
 
@@ -63,12 +237,10 @@ internal class VifReader
         }
     }
 
-    private void ProcessRecords(BinaryReader reader)
+    private bool DetectKbMode(BinaryReader reader)
     {
-        // Search for VIB headers byte-by-byte (original approach)
-        var buffer = new byte[70]; // Max size for one record
-        var recordCount = 0;
-        var state = 0; // 0=looking for 'V', 1=found 'V', 2=found 'VI', 3=found 'VIB'
+        var buffer = new byte[70];
+        var state = 0;
 
         while (reader.BaseStream.Position < reader.BaseStream.Length)
         {
@@ -78,6 +250,123 @@ internal class VifReader
             {
                 buffer[0] = b;
                 state = 1;
+            }
+            else if (state == 1 && b == 'I')
+            {
+                buffer[1] = b;
+                state = 2;
+            }
+            else if (state == 2 && b == 'B')
+            {
+                buffer[2] = b;
+                state = 3;
+
+                var bytesRead = reader.Read(buffer, 3, 9);
+                if (bytesRead != 9)
+                    break;
+
+                var recordType = buffer[3];
+                if (recordType == 0x8A)
+                    return true;
+
+                var recordSize = BitConverter.ToUInt16(buffer, 4);
+                var remainingBytes = recordSize - 12;
+                if (remainingBytes > 0)
+                {
+                    reader.BaseStream.Seek(remainingBytes, SeekOrigin.Current);
+                }
+                state = 0;
+            }
+            else
+            {
+                state = 0;
+            }
+        }
+        return false;
+    }
+
+    private void PrintHeaderNames()
+    {
+        var outWriter = output!;
+        StringBuilder sb = new StringBuilder();
+        
+        sb.Append("\"date\",\"time\",");
+        if (printNumber) sb.Append("\"counter\",");
+        
+        sb.Append("\"state\",\"|v|\",");
+        sb.Append(GetDirectionHeader("x"));
+        sb.Append(GetDirectionHeader("y"));
+        sb.Append(GetDirectionHeader("z"));
+        
+        sb.Append("\"temperature\",\"battery\",\"memory use\",\"usb powered\",");
+        sb.Append("\"signal strength\",\"signal quality\",\"transmitted\",\"all transmitted\",");
+        sb.Append("\"peak type\",\"code\",\"error code\",\"geophone\",\"clock changed\",");
+        
+        outWriter.WriteLine(sb.ToString());
+    }
+
+    private void PrintHeaderUnits()
+    {
+        var outWriter = output!;
+        StringBuilder sb = new StringBuilder();
+        
+        sb.Append("\"YYYY-MM-DD\",\"hh:mm:ss\",");
+        if (printNumber) sb.Append("\"count\",");
+        
+        sb.Append("\"\",\"mm/s\",");
+        sb.Append(GetDirectionUnit());
+        sb.Append(GetDirectionUnit());
+        sb.Append(GetDirectionUnit());
+        
+        sb.Append("\"°C\",\"V\",\"%\",\"\",");
+        sb.Append("\"dBm\",\"\",\"\",\"\",");
+        sb.Append("\"\",\"\",\"\",\"\",\"\",");
+        
+        outWriter.WriteLine(sb.ToString());
+    }
+
+    private string GetDirectionHeader(string axis)
+    {
+        StringBuilder sb = new StringBuilder();
+        sb.Append($"\"state({axis})\",");
+        sb.Append($"\"v({axis})\",");
+        
+        if (isKbMode) sb.Append($"\"kb({axis})\",");
+        else sb.Append($"\"f_zc({axis})\",");
+
+        sb.Append($"\"f_ft({axis})\",");
+        sb.Append($"\"u({axis})\",");
+        sb.Append($"\"a({axis})\",");
+        sb.Append($"\"v_cat({axis})\",");
+        sb.Append($"\"f_cat({axis})\",");
+        return sb.ToString();
+    }
+
+    private string GetDirectionUnit()
+    {
+        return "\"\",\"mm/s\",\"Hz\",\"Hz\",\"mm\",\"m/s2\",\"mm/s\",\"Hz\",";
+    }
+
+    private void ProcessRecords(BinaryReader reader)
+    {
+        // Search for VIB headers byte-by-byte (original approach)
+        var buffer = new byte[70]; // Max size for one record
+        var recordCount = 0;
+        var state = 0; // 0=looking for 'V', 1=found 'V', 2=found 'VI', 3=found 'VIB'
+        byte[]? lastRecord = null;
+        long lastRecordPos = -1;
+        long currentStartPos = -1;
+
+        while (reader.BaseStream.Position < reader.BaseStream.Length)
+        {
+            var pos = reader.BaseStream.Position;
+            var b = reader.ReadByte();
+
+            if (state == 0 && b == 'V')
+            {
+                buffer[0] = b;
+                state = 1;
+                currentStartPos = pos;
             }
             else if (state == 1 && b == 'I')
             {
@@ -99,15 +388,28 @@ internal class VifReader
 
                 // Read remaining data (recordSize - 12) bytes
                 var remainingBytes = recordSize - 12;
-                if (remainingBytes > 0 && remainingBytes < 60)
+                if (remainingBytes > 0)
                 {
-                    bytesRead = reader.Read(buffer, 12, remainingBytes);
-                    if (bytesRead != remainingBytes)
+                    var maxRead = Math.Min(remainingBytes, buffer.Length - 12);
+                    bytesRead = reader.Read(buffer, 12, maxRead);
+                    if (bytesRead != maxRead)
                         break;
+                    if (remainingBytes > maxRead)
+                        reader.BaseStream.Seek(remainingBytes - maxRead, SeekOrigin.Current);
                 }
 
                 recordCount++;
-                ProcessRecord(buffer);
+                if (lastRecord != null && lastRecordPos >= 0)
+                {
+                    int readType = GetReadTypeFromDelta(currentStartPos - lastRecordPos);
+                    ProcessRecord(lastRecord, readType);
+                }
+                if (lastRecord == null)
+                {
+                    lastRecord = new byte[buffer.Length];
+                }
+                Array.Copy(buffer, lastRecord, buffer.Length);
+                lastRecordPos = currentStartPos;
                 state = 0; // Reset to search for next VIB
             }
             else
@@ -116,16 +418,44 @@ internal class VifReader
             }
         }
 
+        if (lastRecord != null)
+        {
+            ProcessRecord(lastRecord, 2);
+        }
+
         Console.Error.WriteLine($"Total records: {recordCount}");
     }
 
-    private void ProcessRecord(byte[] record)
+    private int GetReadTypeFromDelta(long delta)
+    {
+        if (delta == 68)
+            return 2;
+        return 5;
+    }
+
+    private void ProcessRecord(byte[] record, int readType)
     {
         // VIB header is always present at offset 0-2 when we call this
         var recordType = record[3];
         var recordSize = BitConverter.ToUInt16(record, 4);
 
-        recordsProcessed++;
+        if (!IsValidToProcess(recordSize, readType))
+        {
+            recordsSkipped++;
+            return;
+        }
+
+        // Validate record type and size (match original tool)
+        if ( (recordType & 0xFD) != 0x88 )
+        {
+            recordsSkipped++;
+            return;
+        }
+        if (recordSize != 68)
+        {
+            recordsSkipped++;
+            return;
+        }
 
         // Parse datetime - VIB at 0-2, data starts at 3
         // Order at offset 6-11: [second][minute][hour][day][month][year]
@@ -136,8 +466,36 @@ internal class VifReader
         int month = record[10];
         var year = 2000 + record[11];
 
+        if (!DateTimeValid(record[6], record[7], record[8], record[9], record[10], record[11]))
+        {
+            recordsSkipped++;
+            return;
+        }
+
         var date = $"{year:D4}-{month:D2}-{day:D2}";
         var time = $"{hour:D2}:{minute:D2}:{second:D2}";
+
+        // Apply date filters
+        if (filterToday)
+        {
+            var today = DateTime.Today;
+            if (year != today.Year || month != today.Month || day != today.Day)
+            {
+                recordsSkipped++;
+                return;
+            }
+        }
+        else if (dateFilter != null)
+        {
+            if (date != dateFilter)
+            {
+                recordsSkipped++;
+                return;
+            }
+        }
+
+        recordsProcessed++;
+        recordCounter++;
 
         var isExtendedRecord = recordType == 0x8A;
 
@@ -150,9 +508,14 @@ internal class VifReader
         }
 
         // Parse directional data at offsets 14, 28, 42
-        var xData = ParseDirectionData(record, 14, isExtendedRecord);
-        var yData = ParseDirectionData(record, 28, isExtendedRecord);
-        var zData = ParseDirectionData(record, 42, isExtendedRecord);
+        var xStatus = AxisStatus(record, 14);
+        var yStatus = AxisStatus(record, 28);
+        var zStatus = AxisStatus(record, 42);
+        var overallStatus = GetOverallStatus(xStatus, yStatus, zStatus);
+
+        var xData = ParseDirectionData(record, 14, isExtendedRecord, xStatus);
+        var yData = ParseDirectionData(record, 28, isExtendedRecord, yStatus);
+        var zData = ParseDirectionData(record, 42, isExtendedRecord, zStatus);
 
         // Parse sensor data at offsets 56+
         var temperature = record[56] * 0.5 - 27.5;
@@ -161,7 +524,7 @@ internal class VifReader
         var usbPowered = record[58] >> 7;
 
         var signalStrengthRaw = record[59] & 0x1F;
-        var signalStrength = signalStrengthRaw != 0 ? 2 * signalStrengthRaw - 113 : 0;
+        var signalStrength = signalStrengthRaw != 0 ? (2 * signalStrengthRaw - 113).ToString() : "";
         var signalQuality = GetSignalQuality(signalStrengthRaw);
 
         var transmitted = (record[59] & 0x20) != 0 ? 1 : 0;
@@ -170,69 +533,91 @@ internal class VifReader
         var peakType = record[60] & 3;
         var peakTypeCat = GetPeakTypeCat(peakType);
         var codeFlag = (record[60] & 4) != 0;
-        var code = codeFlag ? "DIN" : "ISO";
+        var code = codeFlag ? "SBR" : "DIN";
 
         int errorCode = record[61];
         var geophoneSn = BitConverter.ToUInt16(record, 62);
-        var geophone = $"TDA{geophoneSn:D5}";
+        var geophone = FormatGeophone(geophoneSn);
         var clockChanged = record[60] >> 6;
 
         // Calculate overall state and |v| at offset 12
-        var overallState = xData.state;
-        var overallV = FormatFloat16(BitConverter.ToUInt16(record, 12));
+        var overallState = StatusToString(overallStatus);
+        var overallV = overallStatus == 0 ? FormatFloat16(BitConverter.ToUInt16(record, 12)) : "";
 
         // Output CSV row - matching exact column order from header
-        output.Write($"\"{date}\",");
-        output.Write($"\"{time}\",");
-        output.Write($"\"{counter}\",");
-        output.Write($"\"{overallState}\",");
-        output.Write($"\"{overallV}\",");
+        var outWriter = output!;
+        outWriter.Write($"\"{date}\",");
+        outWriter.Write($"\"{time}\",");
+        if (printNumber)
+        {
+            outWriter.Write($"\"{counter}\",");
+        }
+        outWriter.Write($"\"{overallState}\",");
+        outWriter.Write($"\"{overallV}\",");
         // X axis
-        output.Write($"\"{xData.state}\",");
-        output.Write($"\"{xData.v}\",");
-        output.Write($"\"{xData.kb}\",");
-        output.Write($"\"{xData.ft}\",");
-        output.Write($"\"{xData.u}\",");
-        output.Write($"\"{xData.a}\",");
-        output.Write($"\"{xData.cv}\",");
-        output.Write($"\"{xData.cf}\",");
+        outWriter.Write($"\"{xData.state}\",");
+        outWriter.Write($"\"{xData.v}\",");
+        outWriter.Write($"\"{xData.kb}\",");
+        outWriter.Write($"\"{xData.ft}\",");
+        outWriter.Write($"\"{xData.u}\",");
+        outWriter.Write($"\"{xData.a}\",");
+        outWriter.Write($"\"{xData.cv}\",");
+        outWriter.Write($"\"{xData.cf}\",");
         // Y axis
-        output.Write($"\"{yData.state}\",");
-        output.Write($"\"{yData.v}\",");
-        output.Write($"\"{yData.kb}\",");
-        output.Write($"\"{yData.ft}\",");
-        output.Write($"\"{yData.u}\",");
-        output.Write($"\"{yData.a}\",");
-        output.Write($"\"{yData.cv}\",");
-        output.Write($"\"{yData.cf}\",");
+        outWriter.Write($"\"{yData.state}\",");
+        outWriter.Write($"\"{yData.v}\",");
+        outWriter.Write($"\"{yData.kb}\",");
+        outWriter.Write($"\"{yData.ft}\",");
+        outWriter.Write($"\"{yData.u}\",");
+        outWriter.Write($"\"{yData.a}\",");
+        outWriter.Write($"\"{yData.cv}\",");
+        outWriter.Write($"\"{yData.cf}\",");
         // Z axis
-        output.Write($"\"{zData.state}\",");
-        output.Write($"\"{zData.v}\",");
-        output.Write($"\"{zData.kb}\",");
-        output.Write($"\"{zData.ft}\",");
-        output.Write($"\"{zData.u}\",");
-        output.Write($"\"{zData.a}\",");
-        output.Write($"\"{zData.cv}\",");
-        output.Write($"\"{zData.cf}\",");
+        outWriter.Write($"\"{zData.state}\",");
+        outWriter.Write($"\"{zData.v}\",");
+        outWriter.Write($"\"{zData.kb}\",");
+        outWriter.Write($"\"{zData.ft}\",");
+        outWriter.Write($"\"{zData.u}\",");
+        outWriter.Write($"\"{zData.a}\",");
+        outWriter.Write($"\"{zData.cv}\",");
+        outWriter.Write($"\"{zData.cf}\",");
         // Sensor data
-        output.Write($"\"{temperature.ToString("F1", InvariantCulture)}\",");
-        output.Write($"\"{voltage.ToString("F2", InvariantCulture)}\",");
-        output.Write($"\"{memoryUse}\",");
-        output.Write($"\"{usbPowered}\",");
-        output.Write($"\"{signalStrength}\",");
-        output.Write($"\"{signalQuality}\",");
-        output.Write($"\"{transmitted}\",");
-        output.Write($"\"{allTransmitted}\",");
-        output.Write($"\"{peakTypeCat}\",");
-        output.Write($"\"{code}\",");
-        output.Write($"\"{errorCode}\",");
-        output.Write($"\"{geophone}\",");
-        output.WriteLine($"\"{clockChanged}\",");
+        string tempStr;
+        string voltStr;
+        if (longFormat)
+        {
+            tempStr = FormatFixedOdd(temperature, 4);
+            voltStr = FormatFixedOdd(voltage, 4);
+        }
+        else
+        {
+            tempStr = FormatFixedOdd(temperature, 1);
+            voltStr = FormatFixedOdd(voltage, 2);
+        }
+        outWriter.Write($"\"{tempStr}\",");
+        outWriter.Write($"\"{voltStr}\",");
+        outWriter.Write($"\"{memoryUse}\",");
+        outWriter.Write($"\"{usbPowered}\",");
+        outWriter.Write($"\"{signalStrength}\",");
+        outWriter.Write($"\"{signalQuality}\",");
+        outWriter.Write($"\"{transmitted}\",");
+        outWriter.Write($"\"{allTransmitted}\",");
+        outWriter.Write($"\"{peakTypeCat}\",");
+        outWriter.Write($"\"{code}\",");
+        outWriter.Write($"\"{errorCode}\",");
+        outWriter.Write($"\"{geophone}\",");
+        outWriter.WriteLine($"\"{clockChanged}\"");
     }
 
     private (string v, string kb, string ft, string u, string a, string cv, string cf, string state) ParseDirectionData(
-        byte[] record, int offset, bool isExtended)
+        byte[] record, int offset, bool isExtended, int status)
     {
+        if (status != 0)
+        {
+            var state = StatusToString(status);
+            return ("", "", "", "", "", "", "", state);
+        }
+
         var v_raw = BitConverter.ToUInt16(record, offset);
         var kbzc_raw = BitConverter.ToInt16(record, offset + 2);
         var ft_raw = BitConverter.ToInt16(record, offset + 4);
@@ -241,28 +626,36 @@ internal class VifReader
         var cv_raw = BitConverter.ToUInt16(record, offset + 10);
         var cf_raw = BitConverter.ToInt16(record, offset + 12);
 
-        // Determine state based on special values
-        var state = "";
-        var intV = SV_FromFloat16(v_raw);
-        if (IsSpecialValue(intV))
-            state = "";
-        else if (IsOverload(intV))
-            state = "Overload";
-
         var v = FormatFloat16(v_raw);
         string kb_or_zc;
 
         if (isExtended)
         {
             // KB mode
-            var intVal = SV_FromFloat16(kbzc_raw);
+            var intVal = SV_FromFloat16((short)kbzc_raw);
             var kb_val = Math.Sqrt(intVal) * 0.01;
-            kb_or_zc = kb_val > 0.1 ? kb_val.ToString("F2", InvariantCulture) : "0.00";
+            if (kb_val <= 0.1)
+                kb_val = 0.0;
+            if (longFormat)
+                kb_or_zc = FormatFixedOdd(kb_val, 4);
+            else
+                kb_or_zc = FormatFixedOdd(kb_val, 2);
         }
         else
         {
             // ZC mode
-            kb_or_zc = kbzc_raw > 0 ? (1024.0 / kbzc_raw).ToString("F2", InvariantCulture) : "";
+            if (kbzc_raw <= 0)
+            {
+                kb_or_zc = "";
+            }
+            else
+            {
+                var zc = 1024.0 / kbzc_raw;
+                if (longFormat)
+                    kb_or_zc = FormatFixedOdd(zc, 4);
+                else
+                    kb_or_zc = FormatFixedOdd(zc, 2);
+            }
         }
 
         var ft = FormatInt16(ft_raw);
@@ -271,21 +664,52 @@ internal class VifReader
         var cv = FormatFloat16(cv_raw);
         var cf = FormatInt16(cf_raw);
 
-        return (v, kb_or_zc, ft, u, a, cv, cf, state);
+        return (v, kb_or_zc, ft, u, a, cv, cf, "");
+    }
+
+    private int AxisStatus(byte[] record, int offset)
+    {
+        int s = SV_IsValueValid(BitConverter.ToUInt16(record, offset));
+        if (s == 0) s = SV_IsValueValid(BitConverter.ToUInt16(record, offset + 6));
+        if (s == 0) s = SV_IsValueValid(BitConverter.ToUInt16(record, offset + 8));
+        if (s == 0) s = SV_IsValueValid(BitConverter.ToUInt16(record, offset + 10));
+        return s;
+    }
+
+    private int GetOverallStatus(int xStatus, int yStatus, int zStatus)
+    {
+        if (xStatus == int.MaxValue || yStatus == int.MaxValue || zStatus == int.MaxValue)
+            return int.MaxValue;
+        if (xStatus != 0) return xStatus;
+        if (yStatus != 0) return yStatus;
+        if (zStatus != 0) return zStatus;
+        return 0;
+    }
+
+    private string StatusToString(int status)
+    {
+        return status switch
+        {
+            -1 => "DISCONNECTED",
+            -2 => "DATA INVALID",
+            -3 => "NO DATA",
+            -4 => "NOT RESPONDING",
+            int.MaxValue => "OVERLOAD",
+            _ => ""
+        };
     }
 
     private string FormatFloat16(ushort value)
     {
-        var intVal = SV_FromFloat16(value);
+        var intVal = SV_FromFloat16((short)value);
 
-        if (IsSpecialValue(intVal))
+        if (IsSpecialValue(intVal) || IsOverload(intVal))
             return "";
 
-        if (IsOverload(intVal))
-            return "";
-
-        double result = intVal / FLOAT16_DIVISOR;
-        return result.ToString("F2", InvariantCulture);
+        float result = intVal / FLOAT16_DIVISOR;
+        return longFormat
+            ? FormatFixedOdd(result, 4)
+            : FormatFixedOdd(result, 2);
     }
 
     private string FormatInt16(short value)
@@ -293,66 +717,164 @@ internal class VifReader
         if (IsSpecialValue(value))
             return "";
 
-        if (IsOverload(value))
-            return "";
-
-        double result = value / INT16_DIVISOR;
-        return result.ToString("F1", InvariantCulture);
+        float result = value / INT16_DIVISOR;
+        return longFormat
+            ? FormatFixedOdd(result, 4)
+            : FormatFixedOdd(result, 1);
     }
 
-    private int SV_FromFloat16(int value)
+    private int SV_FromFloat16(short value)
     {
-        // Convert float16 to signed integer value
-        var uval = (ushort)value;
-
-        if (uval == 0 || uval == 0xFFFF)
-            return 0;
-
-        // Extract components
-        var sign = (uval >> 15) & 1;
-        var exponent = (uval >> 10) & 0x1F;
-        var mantissa = uval & 0x3FF;
-
-        if (exponent == 0)
+        int result = value;
+        uint v2 = ((uint)(ushort)value >> 11) - 1;
+        if (v2 <= 0x13)
         {
-            if (mantissa == 0)
-                return 0;
-            // Denormalized
-            var val = mantissa / 1024.0 * Math.Pow(2, -14);
-            return (int)(val * 1000000 * (sign == 1 ? -1 : 1));
+            int v3 = value & 0x7FF;
+            v3 |= 0x800;
+            return v3 << (int)v2;
         }
-
-        if (exponent == 31)
-            // Special value
-            return int.MaxValue;
-
-        // Normalized
-        var value_d = (1.0 + mantissa / 1024.0) * Math.Pow(2, exponent - 15);
-        return (int)(value_d * 1000000 * (sign == 1 ? -1 : 1));
+        return result;
     }
 
     private bool IsSpecialValue(int value)
     {
-        return value == 0 || value == int.MaxValue || value == int.MinValue;
+        return value >= -4 && value <= -1;
     }
 
     private bool IsOverload(int value)
     {
-        return value == int.MaxValue;
+        return value > 99999999;
+    }
+
+    private int SV_IsValueValid(ushort value)
+    {
+        uint v1 = ((uint)value >> 11) - 1;
+        int result;
+
+        if (v1 > 0x13)
+        {
+            result = (short)value;
+            if ((uint)(short)value < 0xFFFFFFFC)
+                return 0;
+        }
+        else
+        {
+            int v2 = value & 0x7FF;
+            v2 = (v2 & 0xFF) | (((v2 >> 8) | 8) << 8);
+            result = v2 << (int)v1;
+            if ((uint)(result + 4) > 3)
+            {
+                bool valid = result <= 99999999;
+                result = int.MaxValue;
+                if (valid)
+                    return 0;
+            }
+        }
+        return result;
     }
 
     private string GetSignalQuality(int signalStrengthRaw)
     {
         if (signalStrengthRaw == 0)
-            return "";
+            return "Unknown";
 
-        if (signalStrengthRaw <= 10)
+        if (signalStrengthRaw > 23)
+            return "Excellent";
+        if (signalStrengthRaw > 15)
+            return "Good";
+        if (signalStrengthRaw > 7)
             return "Low";
-        else if (signalStrengthRaw <= 20)
-            return "Medium";
-        else
-            return "High";
+        return "Bad";
     }
+
+    private string FormatGeophone(ushort value)
+    {
+        ushort type = (ushort)(value & 0xC000);
+        int number = value & 0x3FFF;
+
+        return type switch
+        {
+            0x4000 => $"TDA{number:D5}",
+            0x8000 => $"TDS{number:D5}",
+            0xC000 => "???00000",
+            _ => $"unknown{number:D5}"
+        };
+    }
+
+    private bool DateTimeValid(byte second, byte minute, byte hour, byte day, byte month, byte year)
+    {
+        if (second > 59 || minute > 59 || hour > 23)
+            return false;
+        if (year > 99)
+            return false;
+        if (month < 1 || month > 12)
+            return false;
+
+        int maxDay;
+        switch (month)
+        {
+            case 1:
+            case 3:
+            case 5:
+            case 7:
+            case 8:
+            case 10:
+            case 12:
+                maxDay = 31;
+                break;
+            case 4:
+            case 6:
+            case 9:
+            case 11:
+                maxDay = 30;
+                break;
+            default:
+                maxDay = 28;
+                if ((year & 3) == 0)
+                    maxDay = 29;
+                break;
+        }
+
+        if (day < 1 || day > maxDay)
+            return false;
+
+        return true;
+    }
+
+    private string FormatFixedOdd(double value, int decimals)
+    {
+        double scale = Math.Pow(10.0, decimals);
+        double scaled = value * scale;
+        double sign = Math.Sign(scaled);
+        double absScaled = Math.Abs(scaled);
+        double floor = Math.Floor(absScaled);
+        double frac = absScaled - floor;
+        double rounded;
+
+        const double tieEpsilon = 1e-7;
+        if (frac > 0.5 + tieEpsilon)
+        {
+            rounded = floor + 1;
+        }
+        else if (frac < 0.5 - tieEpsilon)
+        {
+            rounded = floor;
+        }
+        else
+        {
+            rounded = ((long)floor % 2 == 0) ? floor + 1 : floor;
+        }
+
+        rounded *= sign;
+        double result = rounded / scale;
+        return result.ToString("F" + decimals, InvariantCulture);
+    }
+
+    private bool IsValidToProcess(int recordSize, int readType)
+    {
+        return readType <= 9 && recordSize == 68 && ((1 << readType) & 0x45) != 0;
+    }
+
 
     private string GetPeakTypeCat(int peakType)
     {
