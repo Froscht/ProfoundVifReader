@@ -130,7 +130,7 @@ internal class Program
     private static void PrintUsage()
     {
         Console.WriteLine();
-        Console.WriteLine("Profound Tool Suite");
+        Console.WriteLine("Profound Tool Suite remake");
         Console.WriteLine("use: VIF2CSV [OPTIONS] ... [FILES] ...");
         Console.WriteLine("OPTIONS:");
         Console.WriteLine(" -h  --header           = set header data first");

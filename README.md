@@ -1,7 +1,8 @@
-# ProfoundVifReader WIP
+# ProfoundVifReader
 
-A command-line tool for converting Profound VIBRA VIF files to CSV format.
-Its not ready
+Status: **Finished**
+
+Tags: `vif` `csv` `profond-vibra` `cli` `dotnet` `reverse-engineering`
 ## Description
 
 ProfoundVifReader processes binary VIF files from Profound VIBRA vibration monitoring systems and converts them into readable CSV (Comma-Separated Values) format. The tool extracts vibration measurements, sensor data, and metadata from the proprietary VIF format.
@@ -21,9 +22,19 @@ ProfoundVifReader processes binary VIF files from Profound VIBRA vibration monit
 
 ## Usage
 
-```bash
-ProfoundVifReader <vif-file> [output.csv]
 ```
+ProfoundVifReader [OPTIONS] ... [FILES] ...
+```
+
+### Options
+
+- `-h`, `--header` = set header data first
+- `-V`, `--version` = displays the version of this software
+- `-n` = add counter column (default: on)
+- `-N` = remove counter column
+- `-d`, `--day "YYYY-MM-DD"` = output only from a specified day
+- `-D`, `--today` = output only from today
+- `-L`, `--long` = export to csv with extended precision
 
 ### Arguments
 
@@ -33,13 +44,13 @@ ProfoundVifReader <vif-file> [output.csv]
 ### Examples
 
 Convert a VIF file and save to CSV:
-```bash
-ProfoundVifReader data.vif output.csv
+```
+ProfoundVifReader data.vif > output.csv
 ```
 
-Output to console:
-```bash
-ProfoundVifReader data.vif
+Output with header and day filter:
+```
+ProfoundVifReader --header --day "2018-02-07" data.vif > out.csv
 ```
 
 ## Output Format
@@ -58,15 +69,11 @@ The tool generates CSV output with the following columns:
 
 ## Building
 
-```bash
+```
 dotnet build
 ```
 
 ## License
 
-[Add your license information here]
-
-## Author
-
-[Add your name/organization here]
+MIT
 
